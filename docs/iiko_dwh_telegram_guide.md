@@ -194,3 +194,84 @@ project/
 - SQL DDL для таблиц `stg_*`, `f_*`, `m_*`;
 - FastAPI endpoint’ы под ваши команды бота;
 - каркас Telegram-бота с 10 командами и выгрузкой CSV/XLSX.
+
+
+## 13) Какие методы и эндпоинты iiko Cloud API использовать
+
+Ниже — практическая карта «метрика -> источник». Важно: **не все управленческие/складские отчеты доступны напрямую в iiko Cloud API (Transport)**. Для части показателей нужен iikoBiz/OLAP (или выгрузка из back-office), либо расчет в вашей БД из доступных первичных данных.
+
+### 13.1 База для авторизации и справочников
+
+- Авторизация: `POST /api/1/access_token`
+- Организации: `POST /api/1/organizations`
+- Группы терминалов/точки: `POST /api/1/terminal_groups`
+- Типы оплат: `POST /api/1/payment_types`
+- Скидки/надбавки: `POST /api/1/discounts`
+- Номенклатура (блюда, категории): `POST /api/1/nomenclature`
+- Сотрудники/курьеры: `POST /api/1/employees/info`, `POST /api/1/employees/couriers`
+
+### 13.2 Продажи и чеки
+
+- Получение заказов доставки по периоду/статусу:
+  - `POST /api/1/deliveries/by_delivery_date_and_status`
+  - `POST /api/1/deliveries/by_delivery_date_and_source_key_and_filter`
+- Детали конкретного заказа:
+  - `POST /api/1/order/by_id`
+
+Что считать из этих данных в DWH:
+- выручка;
+- количество чеков/заказов;
+- средний чек;
+- скидки и налоги;
+- продажи по блюдам/категориям/точкам/часам/дням/месяцам;
+- продажи по сотрудникам (если в заказе есть нужные идентификаторы).
+
+### 13.3 Доставка и SLA
+
+- Основной источник: те же delivery endpoint’ы:
+  - `POST /api/1/deliveries/by_delivery_date_and_status`
+  - `POST /api/1/deliveries/by_delivery_date_and_source_key_and_filter`
+- Дополнительно по персоналу:
+  - `POST /api/1/employees/couriers`
+  - `POST /api/1/employees/shift/by_courier`
+
+Что считать:
+- количество доставок;
+- среднее время доставки;
+- SLA и доля опозданий;
+- выручка доставки;
+- география (если сохраняете адрес/город/зону в своей витрине).
+
+### 13.4 Что в Cloud API обычно закрывается частично или не закрывается
+
+Для метрик ниже в большинстве проектов нужен **дополнительный источник** (iikoBiz/OLAP/внутренние отчеты back-office), а не только Transport API:
+
+- приходы;
+- списания;
+- перемещения;
+- складские движения;
+- закупки;
+- корректировки;
+- себестоимость «в разрезе движений»;
+- часть кассовых операций (в зависимости от вашей схемы учета и доступности данных).
+
+Практический вариант:
+1. Delivery/Order-аналитику строить через Cloud API endpoint’ы выше.
+2. Склад/себестоимость/закупки тянуть из iikoBiz/OLAP-выгрузок в те же `stg_*` и сводить в единый DWH.
+
+### 13.5 Соответствие методам в `pyiikocloudapi`
+
+В этой библиотеке уже есть обертки над ключевыми endpoint’ами:
+
+- `organizations()` -> `/api/1/organizations`
+- `terminal_groups()` -> `/api/1/terminal_groups`
+- `payment_types()` -> `/api/1/payment_types`
+- `discounts()` -> `/api/1/discounts`
+- `nomenclature()` -> `/api/1/nomenclature`
+- `employees_info()` -> `/api/1/employees/info`
+- `couriers()` -> `/api/1/employees/couriers`
+- `order_by_id()` -> `/api/1/order/by_id`
+- `by_delivery_date_and_status()` -> `/api/1/deliveries/by_delivery_date_and_status`
+- `by_delivery_date_and_source_key_and_filter()` -> `/api/1/deliveries/by_delivery_date_and_source_key_and_filter`
+
+Это удобный минимальный набор, чтобы стартовать с продаж и доставки.
