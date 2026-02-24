@@ -275,3 +275,85 @@ project/
 - `by_delivery_date_and_source_key_and_filter()` -> `/api/1/deliveries/by_delivery_date_and_source_key_and_filter`
 
 Это удобный минимальный набор, чтобы стартовать с продаж и доставки.
+
+## 14) Как получать данные из iikoBiz/OLAP
+
+Ниже — рабочая схема для случаев, когда Transport (Cloud API) не покрывает склад/себестоимость/закупки в нужной глубине.
+
+### 14.1 Что обычно берут из iikoBiz/OLAP
+
+- складские движения (приход, списание, перемещение, корректировки);
+- закупки/поставки;
+- себестоимость и валовая маржа;
+- расширенные кассовые и управленческие срезы;
+- регламентные отчеты, которых нет в Transport API.
+
+### 14.2 Базовые способы интеграции
+
+Практически в проектах используют один из 3 подходов (или комбинацию):
+
+1. **Регламентная выгрузка отчетов (CSV/XLSX) из iikoBiz/OLAP**
+   - Настраивается набор отчетов и расписание выгрузки.
+   - Файлы складываются в S3/MinIO/FTP/сетевую папку.
+   - Ваш ETL подбирает новые файлы, парсит и грузит в `stg_biz_*`.
+
+2. **API-выгрузка отчетов iikoBiz (если доступна в вашей инсталляции/тарифе)**
+   - Вы вызываете endpoint формирования отчета.
+   - Получаете `job_id`/идентификатор задачи.
+   - Опрашиваете статус, затем скачиваете файл результата.
+   - Дальше стандартно: `stg -> dwh -> mart`.
+
+3. **Гибрид**
+   - Delivery/Order в near-real-time из Cloud API.
+   - Склад/себестоимость/закупки пакетно из iikoBiz/OLAP (каждые 1–24 часа).
+
+> Важно: конкретные URL/контракты iikoBiz API могут отличаться по версии/окружению. Поэтому в проде лучше фиксировать «интеграционный контракт» (какой отчет, какие поля, какой формат, какая периодичность) и версионировать его в вашем репозитории.
+
+### 14.3 Рекомендуемый pipeline для iikoBiz-выгрузок
+
+1. **Export job**: инициировать отчет (или дождаться файла по расписанию).
+2. **Landing**: сохранить исходник без изменений (`/landing/iikobiz/{report}/{dt}/...`).
+3. **Staging**: распарсить в `stg_biz_*` + сохранить `raw_row` (JSONB).
+4. **Normalize**: привести ключи (organization_id, point_id, product_id, employee_id, doc_id).
+5. **Deduplicate**: ключ вида `source_report + source_doc_id + row_num + updated_at`.
+6. **Merge to facts**: загрузить в `f_stock_movements`, `f_procurements`, `f_cost`.
+7. **Rebuild marts**: пересчитать `m_stock_cost_turnover`, маржу и себестоимость.
+8. **Quality checks**: сверка сумм/количества строк с итогами исходного отчета.
+
+### 14.4 Минимальный формат служебной таблицы загрузок
+
+```sql
+CREATE TABLE IF NOT EXISTS etl_report_loads (
+    id bigserial PRIMARY KEY,
+    source_system text NOT NULL,             -- iiko_cloud / iikobiz
+    report_name text NOT NULL,
+    report_period_from timestamp,
+    report_period_to timestamp,
+    source_file_name text,
+    source_file_checksum text,
+    row_count integer,
+    loaded_at timestamp NOT NULL DEFAULT now(),
+    status text NOT NULL,                    -- success / failed / partial
+    error_text text
+);
+```
+
+### 14.5 Практика сверки (обязательно)
+
+Для каждого отчета храните 3 контрольных значения:
+- `rows_source` — строк в исходнике;
+- `rows_loaded` — строк после staging;
+- `amount_source` vs `amount_dwh` — контрольная сумма (выручка/себестоимость/приход).
+
+Если расхождение выше порога (например, 0.1% или фиксированный лимит),
+- помечайте загрузку `partial`/`failed`,
+- отправляйте алерт в Telegram/Slack,
+- не публикуйте витрину как «готовую».
+
+### 14.6 Как связать с Telegram-ботом
+
+- В Telegram отдавайте данные только из `mart`-таблиц.
+- Для складских команд (`/stock_movements`, `/cogs`, `/procurements`) добавьте в ответ:
+  - `data_freshness` (время последней успешной загрузки из iikoBiz),
+  - `source` = `iikobiz_olap`.
+- Если свежей загрузки нет — бот должен явно писать: «данные неактуальны, последняя успешная загрузка: ...».
