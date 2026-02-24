@@ -8,6 +8,10 @@
 
 Go: [goiikoapi](https://github.com/kebrick/goiikoapi) — реализация iiko Cloud API на языке Go
 
+## Практические гайды
+
+- [Как построить сервер + БД для отчетов из iiko Cloud API и отдать данные в Telegram-бот](docs/iiko_dwh_telegram_guide.md)
+
 Установка
 ============
 
